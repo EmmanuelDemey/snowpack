@@ -91,21 +91,21 @@ export function rollupPluginWrapInstallTargets(
    * This function spins off a Node.js process to analyze the most accurate set of named imports that this
    * module supports. If this fails, there's not much else possible that we could do.
    */
-  function cjsAutoDetectExportsRuntime(filename: string): string[] | undefined {
+  function cjsAutoDetectExportsRuntime(normalizedFileName: string): string[] | undefined {
     try {
       const {stdout} = execa.sync(
         `node`,
-        ['-p', `JSON.stringify(Object.keys(require('${filename}')))`],
+        ['-p', `JSON.stringify(Object.keys(require('${normalizedFileName}')))`],
         {
           cwd: __dirname,
           extendEnv: false,
         },
       );
       const exportsResult = JSON.parse(stdout).filter(isValidNamedExport);
-      logger.debug(`cjsAutoDetectExportsRuntime success ${filename}: ${exportsResult}`);
+      logger.debug(`cjsAutoDetectExportsRuntime success ${normalizedFileName}: ${exportsResult}`);
       return exportsResult;
     } catch (err) {
-      logger.debug(`cjsAutoDetectExportsRuntime error ${filename}: ${err.message}`);
+      logger.debug(`cjsAutoDetectExportsRuntime error ${normalizedFileName}: ${err.message}`);
     }
   }
 
@@ -140,7 +140,7 @@ export function rollupPluginWrapInstallTargets(
           // If we can trust the static analyzer, run that first.
           (!knownBadPackage && cjsAutoDetectExportsStatic(val)) ||
           // Otherwise, run the more powerful runtime analyzer.
-          cjsAutoDetectExportsRuntime(val);
+          cjsAutoDetectExportsRuntime(normalizedFileLoc);
         if (cjsExports && cjsExports.length > 0) {
           cjsScannedNamedExports.set(normalizedFileLoc, cjsExports);
           input[key] = `snowpack-wrap:${val}`;
