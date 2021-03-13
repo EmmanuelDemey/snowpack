@@ -1,15 +1,25 @@
 import fs from 'fs';
-import * as colors from 'kleur/colors';
 import path from 'path';
 import {Plugin} from 'rollup';
-import {VM as VM2} from 'vm2';
+import execa from 'execa';
 import {AbstractLogger, InstallTarget} from '../types';
-import {getWebDependencyName, isJavaScript, isRemoteUrl, isTruthy, NATIVE_REQUIRE} from '../util';
+import {getWebDependencyName, isJavaScript, isRemoteUrl, isTruthy} from '../util';
 import isValidIdentifier from 'is-valid-identifier';
 import resolve from 'resolve';
 
 // Use CJS intentionally here! ESM interface is async but CJS is sync, and this file is sync
 const {parse} = require('cjs-module-lexer');
+
+function isValidNamedExport(name: string): boolean {
+  return name !== 'default' && name !== '__esModule' && isValidIdentifier(name);
+}
+
+// These packages are written so strangely, that our CJS scanner succeeds at scanning the file
+// but fails to pick up some export. Add popular packages here to save everyone a bit of
+// headache.
+// We use "/index.js here to match the official package, but not any ESM aliase packages
+// that the user may have installed instead (ex: react-esm).
+const UNSCANNABLE_CJS_PACKAGES = ['chai/index.js'];
 
 /**
  * rollup-plugin-wrap-install-targets
@@ -25,40 +35,19 @@ const {parse} = require('cjs-module-lexer');
  */
 export function rollupPluginWrapInstallTargets(
   isTreeshake: boolean,
-  autoDetectPackageExports: string[],
   installTargets: InstallTarget[],
   logger: AbstractLogger,
 ): Plugin {
   const installTargetSummaries: {[loc: string]: InstallTarget} = {};
   const cjsScannedNamedExports = new Map<string, string[]>();
-  /**
-   * Runtime analysis: High Fidelity, but not always successful.
-   * `require()` the CJS file inside of Node.js to load the package and detect it's runtime exports.
-   * TODO: Safe to remove now that cjsAutoDetectExportsUntrusted() is getting smarter?
-   */
-  function cjsAutoDetectExportsTrusted(normalizedFileLoc: string): string[] | undefined {
-    try {
-      const mod = NATIVE_REQUIRE(normalizedFileLoc);
-      // Collect and filter all properties of the object as named exports.
-      return Object.keys(mod).filter((imp) => imp !== 'default' && imp !== '__esModule');
-    } catch (err) {
-      logger.debug(
-        `✘ Runtime CJS auto-detection for ${colors.bold(
-          normalizedFileLoc,
-        )} unsuccessful. Falling back to static analysis. ${err.message}`,
-      );
-    }
-  }
 
   /**
-   * Attempt #2: Static analysis: Lower Fidelity, but safe to run on anything.
-   * Get the exports that we scanned originally using static analysis. This is meant to run on
-   * any file (not only CJS) but it will only return an array if CJS exports were found.
+   * Attempt #1: Static analysis: Lower Fidelity, but faster.
+   * Do our best job to statically scan a file for named exports. This uses "cjs-module-lexer", the
+   * same CJS export scanner that Node.js uses internally. Very fast, but only works on some modules,
+   * depending on how they were build/written/compiled.
    */
-  function cjsAutoDetectExportsUntrusted(
-    filename: string,
-    visited = new Set(),
-  ): string[] | undefined {
+  function cjsAutoDetectExportsStatic(filename: string, visited = new Set()): string[] | undefined {
     const isMainEntrypoint = visited.size === 0;
     // Prevent infinite loops via circular dependencies.
     if (visited.has(filename)) {
@@ -77,7 +66,7 @@ export function rollupPluginWrapInstallTargets(
           [],
           reexports
             .map((e) =>
-              cjsAutoDetectExportsUntrusted(
+              cjsAutoDetectExportsStatic(
                 resolve.sync(e, {basedir: path.dirname(filename)}),
                 visited,
               ),
@@ -85,32 +74,38 @@ export function rollupPluginWrapInstallTargets(
             .filter(isTruthy),
         );
       }
-      // Attempt 2 - UMD: Run the file in a sandbox to dynamically analyze exports.
-      // This will only work on UMD and very simple CJS files (require not supported).
-      // Uses VM2 to run safely sandbox untrusted code (no access no Node.js primitives, just JS).
+      // If nothing was detected, return undefined.
       if (isMainEntrypoint && exports.length === 0 && reexports.length === 0) {
-        const vm = new VM2({wasm: false, fixAsync: false});
-        exports = Object.keys(
-          vm.run(
-            'const exports={}; const module={exports}; ' + fileContents + ';; module.exports;',
-          ),
-        );
-
-        // Verify that all of these are valid identifiers. Otherwise when we attempt to
-        // reexport it will produce invalid js like `import { a, b, 0, ) } from 'foo';
-        const allValid = exports.every((identifier) => isValidIdentifier(identifier));
-        if (!allValid) {
-          exports = [];
-        }
+        return undefined;
       }
-
-      // Resolve and flatten all exports into a single array, and remove invalid exports.
-      return Array.from(new Set([...exports, ...resolvedReexports])).filter(
-        (imp) => imp !== 'default' && imp !== '__esModule',
-      );
+      // Otherwise, resolve and flatten all exports into a single array, remove invalid exports.
+      return Array.from(new Set([...exports, ...resolvedReexports])).filter(isValidNamedExport);
     } catch (err) {
       // Safe to ignore, this is usually due to the file not being CJS.
-      logger.debug(`cjsAutoDetectExportsUntrusted error: ${err.message}`);
+      logger.debug(`cjsAutoDetectExportsStatic ${filename}: ${err.message}`);
+    }
+  }
+
+  /**
+   * Attempt #2 - Runtime analysis: More powerful, but slower.
+   * This function spins off a Node.js process to analyze the most accurate set of named imports that this
+   * module supports. If this fails, there's not much else possible that we could do.
+   */
+  function cjsAutoDetectExportsRuntime(filename: string): string[] | undefined {
+    try {
+      const {stdout} = execa.sync(
+        `node`,
+        ['-p', `JSON.stringify(Object.keys(require('${filename}')))`],
+        {
+          cwd: __dirname,
+          extendEnv: false,
+        },
+      );
+      const exportsResult = JSON.parse(stdout).filter(isValidNamedExport);
+      logger.debug(`cjsAutoDetectExportsRuntime success ${filename}: ${exportsResult}`);
+      return exportsResult;
+    } catch (err) {
+      logger.debug(`cjsAutoDetectExportsRuntime error ${filename}: ${err.message}`);
     }
   }
 
@@ -138,12 +133,14 @@ export function rollupPluginWrapInstallTargets(
         }, {} as any);
         installTargetSummaries[val] = installTargetSummary;
         const normalizedFileLoc = val.split(path.win32.sep).join(path.posix.sep);
-        const isExplicitAutoDetect = autoDetectPackageExports.some((p) =>
+        const knownBadPackage = UNSCANNABLE_CJS_PACKAGES.some((p) =>
           normalizedFileLoc.includes(`node_modules/${p}${p.endsWith('.js') ? '' : '/'}`),
         );
-        const cjsExports = isExplicitAutoDetect
-          ? cjsAutoDetectExportsTrusted(val)
-          : cjsAutoDetectExportsUntrusted(val);
+        const cjsExports =
+          // If we can trust the static analyzer, run that first.
+          (!knownBadPackage && cjsAutoDetectExportsStatic(val)) ||
+          // Otherwise, run the more powerful runtime analyzer.
+          cjsAutoDetectExportsRuntime(val);
         if (cjsExports && cjsExports.length > 0) {
           cjsScannedNamedExports.set(normalizedFileLoc, cjsExports);
           input[key] = `snowpack-wrap:${val}`;

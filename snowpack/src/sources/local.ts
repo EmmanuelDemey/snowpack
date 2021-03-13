@@ -51,6 +51,10 @@ const NEVER_PEER_PACKAGES: string[] = [
   'whatwg-fetch',
 ];
 
+function isPackageEsm(packageManifest: any): boolean {
+  return !!(packageManifest.module || packageManifest.exports || packageManifest.type === 'module');
+}
+
 function getRootPackageDirectory(loc: string) {
   const parts = loc.split('node_modules');
   if (parts.length === 1) {
@@ -312,7 +316,7 @@ export default {
         // Look up the import map of the already-installed package.
         // If spec already exists, then this import map is valid.
         const lineBullet = colors.dim(depth === 0 ? '+' : '└──'.padStart(depth * 2 + 1, ' '));
-        const packageFormatted = spec + colors.dim('@' + packageVersion);
+        let packageFormatted = spec + colors.dim('@' + packageVersion);
         const existingImportMapLoc = path.join(installDest, 'import-map.json');
         const existingImportMap =
           (await fs.stat(existingImportMapLoc).catch(() => null)) &&
@@ -320,8 +324,6 @@ export default {
         if (existingImportMap && existingImportMap.imports[spec]) {
           if (depth > 0) {
             logger.info(`${lineBullet} ${packageFormatted} ${colors.dim(`(dedupe)`)}`);
-          } else {
-            logger.debug(`${lineBullet} ${packageFormatted} ${colors.dim(`(dedupe)`)}`);
           }
           return existingImportMap;
         }
@@ -366,7 +368,7 @@ export default {
               _packageName += '/' + specParts.shift();
             }
             const [, result] = resolveDependencyManifest(_packageName);
-            return !result || !!(result.module || result.exports || result.type === 'module');
+            return !result || isPackageEsm(result);
           },
         };
         if (config.packageOptions.source === 'local') {

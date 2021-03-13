@@ -10,7 +10,6 @@ import rimraf from 'rimraf';
 import {InputOptions, OutputOptions, Plugin as RollupPlugin, rollup, RollupError} from 'rollup';
 import rollupPluginNodePolyfills from 'rollup-plugin-polyfill-node';
 import rollupPluginReplace from '@rollup/plugin-replace';
-import util from 'util';
 import {rollupPluginAlias} from './rollup-plugins/rollup-plugin-alias';
 import {rollupPluginCatchFetch} from './rollup-plugins/rollup-plugin-catch-fetch';
 import {rollupPluginCatchUnresolved} from './rollup-plugins/rollup-plugin-catch-unresolved';
@@ -52,27 +51,6 @@ type DependencyLoc = {
   type: 'BUNDLE' | 'ASSET' | 'DTS';
   loc: string;
 };
-
-// Add popular CJS packages here that use "synthetic" named imports in their documentation.
-// CJS packages should really only be imported via the default export:
-//   import React from 'react';
-// But, some large projects use named exports in their documentation:
-//   import {useState} from 'react';
-//
-// We use "/index.js here to match the official package, but not any ESM aliase packages
-// that the user may have installed instead (ex: react-esm).
-const CJS_PACKAGES_TO_AUTO_DETECT = [
-  'react/index.js',
-  'react-dom/index.js',
-  'react-dom/server.js',
-  'react-is/index.js',
-  'prop-types/index.js',
-  'scheduler/index.js',
-  'react-table',
-  'chai/index.js',
-  'events/events.js',
-  'uuid/index.js',
-];
 
 function isImportOfPackage(importUrl: string, packageName: string) {
   return packageName === importUrl || importUrl.startsWith(packageName + '/');
@@ -136,6 +114,7 @@ interface InstallOptions {
   externalEsm: string[] | ((imp: string) => boolean);
   packageLookupFields: string[];
   packageExportLookupFields: string[];
+  // @deprecated No longer needed, all packages now have the highest fidelity named export support possible
   namedExports: string[];
   rollup: {
     context?: string;
@@ -202,7 +181,6 @@ export async function install(
     importMap: _importMap,
     logger,
     dest: destLoc,
-    namedExports,
     external,
     externalEsm,
     sourcemap,
@@ -237,7 +215,6 @@ export async function install(
   const importMap: ImportMap = {imports: {}};
   let dependencyStats: DependencyStatsOutput | null = null;
   const skipFailures = false;
-  const autoDetectNamedExports = [...CJS_PACKAGES_TO_AUTO_DETECT, ...namedExports];
 
   for (const installSpecifier of allInstallSpecifiers) {
     let targetName = getWebDependencyName(installSpecifier);
@@ -360,7 +337,7 @@ ${colors.dim(
             : (externalEsm as Function)(id),
         requireReturnsDefault: 'auto',
       } as RollupCommonJSOptions),
-      rollupPluginWrapInstallTargets(!!isTreeshake, autoDetectNamedExports, installTargets, logger),
+      rollupPluginWrapInstallTargets(!!isTreeshake, installTargets, logger),
       stats && rollupPluginDependencyStats((info) => (dependencyStats = info)),
       rollupPluginNodeProcessPolyfill(env),
       polyfillNode && rollupPluginNodePolyfills(),
@@ -417,11 +394,9 @@ ${colors.dim(
   if (Object.keys(installEntrypoints).length > 0) {
     try {
       logger.debug(process.cwd());
-      logger.debug(`running installer with options: ${util.format(inputOptions)}`);
+      logger.debug(`running installer with options: ${JSON.stringify(inputOptions)}`);
       const packageBundle = await rollup(inputOptions);
-      logger.debug(
-        `installing npm packages:\n    ${Object.keys(installEntrypoints).join('\n    ')}`,
-      );
+      logger.debug(`installing npm packages: ${Object.keys(installEntrypoints).join(', ')}`);
       if (isFatalWarningFound) {
         throw new Error(FAILED_INSTALL_MESSAGE);
       }
