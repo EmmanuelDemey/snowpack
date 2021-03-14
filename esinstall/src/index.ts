@@ -93,7 +93,7 @@ function generateReplacements(env: Object): {[key: string]: string} {
     {
       // Other find & replacements:
       // tslib: fights with Rollup's namespace/default handling, so just remove it.
-      'return (mod && mod.__esModule) ? mod : { "default": mod };': 'return mod;',
+      'mod && mod.__esModule': 'true',
     },
   );
 }

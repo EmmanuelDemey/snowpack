@@ -49,6 +49,7 @@ const NEVER_PEER_PACKAGES: string[] = [
   'es-abstract',
   'node-fetch',
   'whatwg-fetch',
+  'tslib',
 ];
 
 function isPackageEsm(packageManifest: any): boolean {
