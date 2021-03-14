@@ -111,7 +111,7 @@ interface InstallOptions {
   polyfillNode: boolean;
   sourcemap?: boolean | 'inline';
   external: string[];
-  externalEsm: string[] | ((imp: string) => boolean);
+  externalEsm: boolean | string[] | ((imp: string) => boolean);
   packageLookupFields: string[];
   packageExportLookupFields: string[];
   // @deprecated No longer needed, all packages now have the highest fidelity named export support possible
@@ -197,7 +197,7 @@ export async function install(
   const installTargets: InstallTarget[] = _installTargets.map((t) =>
     typeof t === 'string' ? createInstallTarget(t) : t,
   );
-  
+
   // TODO: warn if import from  "firebase", since that includes so many Node-specific files
 
   const allInstallSpecifiers = new Set(
@@ -337,7 +337,7 @@ ${colors.dim(
         esmExternals: (id) =>
           Array.isArray(externalEsm)
             ? externalEsm.some((packageName) => isImportOfPackage(id, packageName))
-            : (externalEsm as Function)(id),
+            : externalEsm,
         requireReturnsDefault: 'auto',
       } as RollupCommonJSOptions),
       rollupPluginWrapInstallTargets(!!isTreeshake, installTargets, logger),
