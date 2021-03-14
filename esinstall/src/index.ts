@@ -197,6 +197,9 @@ export async function install(
   const installTargets: InstallTarget[] = _installTargets.map((t) =>
     typeof t === 'string' ? createInstallTarget(t) : t,
   );
+  
+  // TODO: warn if import from  "firebase", since that includes so many Node-specific files
+
   const allInstallSpecifiers = new Set(
     installTargets
       .filter(
